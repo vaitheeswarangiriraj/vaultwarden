@@ -1,0 +1,68 @@
+name: Sync with upstream (all branches)
+
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-with-upstream
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sync branches from upstream
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UPSTREAM_REPOSITORY: dani-garcia/vaultwarden
+        run: |
+          set -euo pipefail
+
+          workdir=$(mktemp -d)
+          cd "$workdir"
+
+          git init
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git remote add upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
+
+          git fetch --no-tags --prune origin
+          git fetch --no-tags --prune upstream
+
+          for ref in $(git for-each-ref --format='%(refname:short)' refs/remotes/upstream); do
+            branch=${ref#upstream/}
+            if [ "$branch" = "HEAD" ]; then
+              continue
+            fi
+
+            upstream_ref="refs/remotes/upstream/$branch"
+            upstream_sha=$(git rev-parse --verify "$upstream_ref" 2>/dev/null || true)
+
+            if [ -z "$upstream_sha" ]; then
+              continue
+            fi
+
+            origin_ref="refs/remotes/origin/$branch"
+            origin_sha=$(git rev-parse --verify "$origin_ref" 2>/dev/null || true)
+
+            if [ -n "$origin_sha" ] && [ "$origin_sha" = "$upstream_sha" ]; then
+              echo "Branch $branch already up-to-date."
+              continue
+            fi
+
+            if [ -n "$origin_sha" ]; then
+              if ! git merge-base --is-ancestor "$origin_sha" "$upstream_sha"; then
+                echo "Origin/$branch has diverged from upstream/$branch — skipping."
+                continue
+              fi
+            fi
+
+            git push origin "$upstream_sha:refs/heads/$branch"
+            echo "Synchronized upstream/$branch -> origin/$branch"
+          done
+
+          echo "All done."
